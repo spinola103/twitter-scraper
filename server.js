@@ -20,6 +20,11 @@ app.get('/', (req, res) => {
 
 // Unified scraping function
 async function scrapeTwitterProfile(url, res) {
+  // Prevent multiple responses
+  if (res.headersSent) {
+    return;
+  }
+  
   console.log(`🚀 Starting scrape for: ${url}`);
   
   const command = `node scrape_account.js "${url}"`;
@@ -30,6 +35,11 @@ async function scrapeTwitterProfile(url, res) {
     cwd: __dirname,
     maxBuffer: 1024 * 1024 * 10 // 10MB buffer
   }, (error, stdout, stderr) => {
+    // Check if response was already sent
+    if (res.headersSent) {
+      return;
+    }
+    
     if (error) {
       console.error('❌ Scraping failed:', error.message);
       return res.status(500).json({
@@ -69,10 +79,13 @@ async function scrapeTwitterProfile(url, res) {
       
     } catch (parseError) {
       console.error('❌ JSON parsing failed:', parseError.message);
-      res.status(500).json({
-        error: 'Failed to parse scraping results',
-        message: parseError.message
-      });
+      
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: 'Failed to parse scraping results',
+          message: parseError.message
+        });
+      }
     }
   });
 }
@@ -104,12 +117,29 @@ app.get('/scrape/:username', (req, res) => {
   scrapeTwitterProfile(url, res);
 });
 
-// Error handling
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Server error:', err);
+  
+  // Prevent the response from being sent multiple times
+  if (res.headersSent) {
+    return next(err);
+  }
+  
   res.status(500).json({
-    error: 'Internal server error'
+    error: 'Internal server error',
+    message: err.message
   });
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
 });
 
 // Start server
