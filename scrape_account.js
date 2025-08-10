@@ -4,7 +4,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 const profileURL = process.argv[2] || "https://twitter.com/phantom";
-const MAX_TWEETS = 5; // Changed to 5 tweets
+const MAX_TWEETS = 5;
 
 async function extractTweets(page, maxTweets) {
   const tweets = await page.evaluate((maxTweets) => {
@@ -18,40 +18,60 @@ async function extractTweets(page, maxTweets) {
       return parseInt(match[0].replace(/,/g, ''), 10) || 0;
     }
     
-    // Function to check if tweet is pinned
+    // Enhanced function to check if tweet is pinned
     function isPinnedTweet(article) {
-      // Look for pinned tweet indicators
       const pinnedIndicators = [
-        '[data-testid="socialContext"]', // Common pinned tweet indicator
+        '[data-testid="socialContext"]',
         '[aria-label*="Pinned"]',
         '[aria-label*="pinned"]',
         'svg[aria-label*="Pinned"]',
-        'svg[aria-label*="pinned"]'
+        'svg[aria-label*="pinned"]',
+        '[data-testid="pin"]'
       ];
       
       for (const selector of pinnedIndicators) {
         const element = article.querySelector(selector);
         if (element) {
-          const text = element.textContent || element.getAttribute('aria-label') || '';
-          if (text.toLowerCase().includes('pinned')) {
+          const text = (element.textContent || element.getAttribute('aria-label') || '').toLowerCase();
+          if (text.includes('pinned') || text.includes('pin')) {
             return true;
           }
         }
       }
       
-      // Check for "Pinned Tweet" text in social context
+      // Check parent containers for pinned indicators
       const socialContext = article.querySelector('[data-testid="socialContext"]');
-      if (socialContext && socialContext.textContent.toLowerCase().includes('pinned')) {
-        return true;
+      if (socialContext) {
+        const contextText = socialContext.textContent.toLowerCase();
+        if (contextText.includes('pinned') || contextText.includes('pin')) {
+          return true;
+        }
       }
       
       return false;
     }
     
-    let processedTweets = 0;
+    // Function to check if tweet is too old (more than 30 days)
+    function isTweetTooOld(timestamp) {
+      if (!timestamp) return false;
+      const tweetDate = new Date(timestamp);
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      return tweetDate < thirtyDaysAgo;
+    }
     
-    for (let i = 0; i < articles.length && processedTweets < maxTweets; i++) {
-      const article = articles[i];
+    let processedTweets = 0;
+    let recentTweetsFound = 0;
+    
+    // Sort articles by their position on page (newest first)
+    const sortedArticles = Array.from(articles).sort((a, b) => {
+      const aRect = a.getBoundingClientRect();
+      const bRect = b.getBoundingClientRect();
+      return aRect.top - bRect.top;
+    });
+    
+    for (let i = 0; i < sortedArticles.length && processedTweets < maxTweets; i++) {
+      const article = sortedArticles[i];
       
       try {
         // Skip pinned tweets
@@ -62,8 +82,26 @@ async function extractTweets(page, maxTweets) {
         const textElement = article.querySelector('[data-testid="tweetText"]');
         const text = textElement ? textElement.innerText.trim() : '';
         
-        const linkElement = article.querySelector('a[href*="/status/"]');
-        const link = linkElement ? 'https://twitter.com' + linkElement.getAttribute('href') : '';
+        // Multiple selectors for tweet links
+        const linkSelectors = [
+          'a[href*="/status/"]',
+          'a[href*="/statuses/"]',
+          '[data-testid="tweet"] a[href*="/"]'
+        ];
+        
+        let linkElement = null;
+        let link = '';
+        
+        for (const selector of linkSelectors) {
+          linkElement = article.querySelector(selector);
+          if (linkElement) {
+            const href = linkElement.getAttribute('href');
+            if (href && (href.includes('/status/') || href.includes('/statuses/'))) {
+              link = href.startsWith('http') ? href : 'https://twitter.com' + href;
+              break;
+            }
+          }
+        }
         
         if (!link) continue;
         
@@ -75,23 +113,58 @@ async function extractTweets(page, maxTweets) {
         const retweets = retweetElement ? extractNumber(retweetElement.getAttribute('aria-label')) : 0;
         const replies = replyElement ? extractNumber(replyElement.getAttribute('aria-label')) : 0;
         
-        const userElement = article.querySelector('[data-testid="User-Name"]');
+        // Multiple selectors for username
+        const userSelectors = [
+          '[data-testid="User-Name"]',
+          '[data-testid="User-Names"]',
+          '[data-testid="UserName"]'
+        ];
+        
         let username = '';
-        if (userElement) {
-          const usernameText = userElement.innerText;
-          const lines = usernameText.split('\n');
-          username = lines[0] ? lines[0].trim() : '';
+        for (const selector of userSelectors) {
+          const userElement = article.querySelector(selector);
+          if (userElement) {
+            const usernameText = userElement.innerText;
+            const lines = usernameText.split('\n');
+            username = lines[0] ? lines[0].trim() : '';
+            if (username) break;
+          }
         }
         
-        const timeElement = article.querySelector('time');
-        const timestamp = timeElement ? timeElement.getAttribute('datetime') : '';
+        // Multiple selectors for timestamp
+        const timeSelectors = ['time', '[datetime]', '[data-testid="Time"]'];
+        let timestamp = '';
         
-        const mediaElements = article.querySelectorAll('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], img[alt*="Image"]');
+        for (const selector of timeSelectors) {
+          const timeElement = article.querySelector(selector);
+          if (timeElement) {
+            timestamp = timeElement.getAttribute('datetime') || timeElement.getAttribute('title') || '';
+            if (timestamp) break;
+          }
+        }
+        
+        // Skip tweets that are too old
+        if (timestamp && isTweetTooOld(timestamp)) {
+          continue;
+        }
+        
+        const mediaElements = article.querySelectorAll('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], img[alt*="Image"], video');
         const hasMedia = mediaElements.length > 0;
         
         const verifiedElement = article.querySelector('[data-testid="icon-verified"]') || 
-                               article.querySelector('svg[aria-label*="Verified"]');
+                               article.querySelector('svg[aria-label*="Verified"]') ||
+                               article.querySelector('[data-testid="verified"]');
         const isVerified = !!verifiedElement;
+        
+        // Count recent tweets (last 7 days)
+        if (timestamp) {
+          const tweetDate = new Date(timestamp);
+          const sevenDaysAgo = new Date();
+          sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+          if (tweetDate >= sevenDaysAgo) {
+            recentTweetsFound++;
+          }
+        }
         
         tweetData.push({
           index: processedTweets + 1,
@@ -115,7 +188,11 @@ async function extractTweets(page, maxTweets) {
       }
     }
     
-    return tweetData;
+    return {
+      tweets: tweetData,
+      recentTweetsFound: recentTweetsFound,
+      totalArticles: articles.length
+    };
   }, maxTweets);
   
   return tweets;
@@ -147,7 +224,8 @@ async function extractTweets(page, maxTweets) {
         '--disable-plugins',
         '--disable-images',
         '--disable-notifications',
-        '--disable-background-networking'
+        '--disable-background-networking',
+        '--disable-blink-features=AutomationControlled'
       ],
       defaultViewport: { width: 1200, height: 800 }
     });
@@ -164,74 +242,108 @@ async function extractTweets(page, maxTweets) {
       }
     });
     
-    // Add cache-busting headers and random parameters to try to get fresh content
+    // Enhanced cache-busting headers
     await page.setExtraHTTPHeaders({
       'Cache-Control': 'no-cache, no-store, must-revalidate',
       'Pragma': 'no-cache',
       'Expires': '0',
-      'If-Modified-Since': 'Thu, 01 Jan 1970 00:00:00 GMT'
+      'If-Modified-Since': 'Thu, 01 Jan 1970 00:00:00 GMT',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.5',
+      'Accept-Encoding': 'gzip, deflate',
+      'DNT': '1',
+      'Connection': 'keep-alive',
+      'Upgrade-Insecure-Requests': '1'
     });
     
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    // Randomize user agent
+    const userAgents = [
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    ];
+    await page.setUserAgent(userAgents[Math.floor(Math.random() * userAgents.length)]);
     
-    // Add random parameter to URL to bypass caching
-    const cacheBustURL = profileURL + (profileURL.includes('?') ? '&' : '?') + 'cb=' + Date.now();
-    
-    await page.goto(cacheBustURL, { 
-      waitUntil: 'domcontentloaded',
-      timeout: 60000
-    });
-    
-    // Wait longer and try multiple refresh techniques
-    await new Promise(resolve => setTimeout(resolve, 10000));
-    
-    // Try to force refresh by multiple scroll actions
-    await page.evaluate(() => {
-      // Simulate human-like scrolling behavior
-      window.scrollTo(0, 50);
-      setTimeout(() => window.scrollTo(0, 0), 500);
-    });
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // Try refreshing the page once more to get latest content
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await new Promise(resolve => setTimeout(resolve, 5000));
-
-    const selectors = ['article', '[data-testid="tweet"]', '[role="article"]'];
-    let tweetsFound = false;
-    
-    for (const selector of selectors) {
+    // Add cache-busting parameter and try multiple attempts
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const cacheBustURL = profileURL + (profileURL.includes('?') ? '&' : '?') + 'cb=' + Date.now() + '&v=' + attempt;
+      
       try {
-        await page.waitForSelector(selector, { timeout: 10000 });
-        tweetsFound = true;
-        break;
-      } catch (e) {
+        await page.goto(cacheBustURL, { 
+          waitUntil: 'domcontentloaded',
+          timeout: 60000
+        });
+        
+        // Extended wait for different account types
+        await new Promise(resolve => setTimeout(resolve, 8000 + (attempt * 2000)));
+        
+        // Enhanced scrolling strategy
+        await page.evaluate(() => {
+          window.scrollTo(0, 0);
+          return new Promise(resolve => setTimeout(resolve, 1000));
+        });
+        
+        // Check if we can find recent tweets
+        const selectors = ['article', '[data-testid="tweet"]', '[role="article"]'];
+        let tweetsFound = false;
+        
+        for (const selector of selectors) {
+          try {
+            await page.waitForSelector(selector, { timeout: 10000 });
+            tweetsFound = true;
+            break;
+          } catch (e) {
+            continue;
+          }
+        }
+        
+        if (!tweetsFound) {
+          if (attempt < 2) continue;
+          throw new Error('Could not find any tweets on the page');
+        }
+
+        // Smart scrolling based on content loading
+        for (let scroll = 0; scroll < 4; scroll++) {
+          await page.evaluate((scrollIndex) => {
+            const scrollAmount = window.innerHeight * (1.2 + scrollIndex * 0.3);
+            window.scrollBy(0, scrollAmount);
+          }, scroll);
+          
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          // Check if we have enough content
+          const articleCount = await page.evaluate(() => document.querySelectorAll('article').length);
+          if (articleCount >= 10) break;
+        }
+
+        // Return to top for extraction
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        const extractedData = await extractTweets(page, MAX_TWEETS);
+        
+        // If we got recent tweets or this is our last attempt, use the data
+        if (extractedData.recentTweetsFound > 0 || attempt === 2) {
+          result.success = true;
+          result.tweetsCount = extractedData.tweets.length;
+          result.tweets = extractedData.tweets;
+          result.metadata = {
+            recentTweetsFound: extractedData.recentTweetsFound,
+            totalArticles: extractedData.totalArticles,
+            attempts: attempt + 1
+          };
+          break;
+        }
+        
+        // If no recent tweets, try again with different approach
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+      } catch (error) {
+        if (attempt === 2) throw error;
+        await new Promise(resolve => setTimeout(resolve, 3000));
         continue;
       }
     }
-    
-    if (!tweetsFound) {
-      throw new Error('Could not find any tweets on the page');
-    }
-
-    // Scroll to load enough tweets, but start from top to get latest ones
-    await page.evaluate(() => window.scrollTo(0, 0)); // Ensure we're at top
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    for (let i = 0; i < 3; i++) {
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 1.5));
-      await new Promise(resolve => setTimeout(resolve, 2500)); // Increased wait time
-    }
-    
-    // Scroll back to top to process from newest tweets
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    const tweets = await extractTweets(page, MAX_TWEETS);
-    
-    result.success = true;
-    result.tweetsCount = tweets.length;
-    result.tweets = tweets;
 
   } catch (error) {
     result.error = error.message;
