@@ -1,0 +1,8 @@
+node_modules/
+*.log
+.env
+debug_screenshot.png
+selector_debug.png
+tweets.json
+cookie.json
+*.tmp
