@@ -164,17 +164,38 @@ async function extractTweets(page, maxTweets) {
       }
     });
     
+    // Add cache-busting headers and random parameters to try to get fresh content
+    await page.setExtraHTTPHeaders({
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'If-Modified-Since': 'Thu, 01 Jan 1970 00:00:00 GMT'
+    });
+    
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
-    await page.goto(profileURL, { 
+    // Add random parameter to URL to bypass caching
+    const cacheBustURL = profileURL + (profileURL.includes('?') ? '&' : '?') + 'cb=' + Date.now();
+    
+    await page.goto(cacheBustURL, { 
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
     
-    // Wait longer for initial load and scroll to very top to ensure latest tweets load
+    // Wait longer and try multiple refresh techniques
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    
+    // Try to force refresh by multiple scroll actions
+    await page.evaluate(() => {
+      // Simulate human-like scrolling behavior
+      window.scrollTo(0, 50);
+      setTimeout(() => window.scrollTo(0, 0), 500);
+    });
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Try refreshing the page once more to get latest content
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await new Promise(resolve => setTimeout(resolve, 5000));
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await new Promise(resolve => setTimeout(resolve, 2000));
 
     const selectors = ['article', '[data-testid="tweet"]', '[role="article"]'];
     let tweetsFound = false;
