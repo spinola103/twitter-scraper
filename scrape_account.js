@@ -4,7 +4,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 const profileURL = process.argv[2] || "https://twitter.com/phantom";
-const MAX_TWEETS = 6;
+const MAX_TWEETS = 10;
 
 async function extractTweets(page, maxTweets) {
   const tweets = await page.evaluate((maxTweets) => {
@@ -31,6 +31,9 @@ async function extractTweets(page, maxTweets) {
         const linkElement = article.querySelector('a[href*="/status/"]');
         const link = linkElement ? 'https://twitter.com' + linkElement.getAttribute('href') : '';
         
+        // Skip if no link found (not a valid tweet)
+        if (!link) continue;
+        
         // Get engagement metrics
         const likeElement = article.querySelector('[data-testid="like"]');
         const retweetElement = article.querySelector('[data-testid="retweet"]');
@@ -42,30 +45,41 @@ async function extractTweets(page, maxTweets) {
         
         // Get user info
         const userElement = article.querySelector('[data-testid="User-Name"]');
-        const username = userElement ? userElement.innerText.split('\n')[0].trim() : '';
+        let username = '';
+        if (userElement) {
+          const usernameText = userElement.innerText;
+          const lines = usernameText.split('\n');
+          username = lines[0] ? lines[0].trim() : '';
+        }
         
         // Get timestamp
         const timeElement = article.querySelector('time');
         const timestamp = timeElement ? timeElement.getAttribute('datetime') : '';
         
         // Check for media
-        const mediaElements = article.querySelectorAll('[data-testid="tweetPhoto"], [data-testid="videoPlayer"]');
+        const mediaElements = article.querySelectorAll('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], img[alt*="Image"]');
         const hasMedia = mediaElements.length > 0;
         
-        // Only include tweets with content
-        if (text || hasMedia || link) {
-          tweetData.push({
-            username: username,
-            text: text,
-            link: link,
-            timestamp: timestamp,
-            replies: replies,
-            retweets: retweets,
-            likes: likes,
-            hasMedia: hasMedia,
-            extractedAt: new Date().toISOString()
-          });
-        }
+        // Check if verified
+        const verifiedElement = article.querySelector('[data-testid="icon-verified"]') || 
+                               article.querySelector('svg[aria-label*="Verified"]');
+        const isVerified = !!verifiedElement;
+        
+        tweetData.push({
+          index: i + 1,
+          username: username,
+          text: text,
+          link: link,
+          timestamp: timestamp,
+          replies: replies,
+          retweets: retweets,
+          likes: likes,
+          verified: isVerified,
+          hasMedia: hasMedia,
+          mediaCount: mediaElements.length,
+          extractedAt: new Date().toISOString()
+        });
+        
       } catch (error) {
         // Skip failed tweets silently
         continue;
@@ -80,9 +94,16 @@ async function extractTweets(page, maxTweets) {
 
 (async () => {
   let browser;
+  let result = {
+    success: false,
+    url: profileURL,
+    tweetsCount: 0,
+    tweets: [],
+    scrapedAt: new Date().toISOString()
+  };
   
   try {
-    // Railway-optimized configuration
+    // Launch browser with minimal logging
     browser = await puppeteer.launch({
       headless: 'new',
       args: [
@@ -96,12 +117,25 @@ async function extractTweets(page, maxTweets) {
         '--no-zygote',
         '--disable-extensions',
         '--disable-plugins',
-        '--disable-images'
+        '--disable-images',
+        '--disable-notifications',
+        '--disable-background-networking'
       ],
       defaultViewport: { width: 1200, height: 800 }
     });
 
     const page = await browser.newPage();
+    
+    // Block unnecessary resources
+    await page.setRequestInterception(true);
+    page.on('request', (req) => {
+      const resourceType = req.resourceType();
+      if (resourceType === 'image' || resourceType === 'stylesheet' || resourceType === 'font') {
+        req.abort();
+      } else {
+        req.continue();
+      }
+    });
     
     // Set realistic headers
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
@@ -142,28 +176,18 @@ async function extractTweets(page, maxTweets) {
     // Extract tweets
     const tweets = await extractTweets(page, MAX_TWEETS);
     
-    // Output only clean JSON
-    console.log(JSON.stringify({
-      success: true,
-      url: profileURL,
-      tweetsCount: tweets.length,
-      tweets: tweets,
-      scrapedAt: new Date().toISOString()
-    }));
+    result.success = true;
+    result.tweetsCount = tweets.length;
+    result.tweets = tweets;
 
   } catch (error) {
-    // Output error as JSON
-    console.log(JSON.stringify({
-      success: false,
-      error: error.message,
-      url: profileURL,
-      tweetsCount: 0,
-      tweets: [],
-      scrapedAt: new Date().toISOString()
-    }));
+    result.error = error.message;
   } finally {
     if (browser) {
       await browser.close();
     }
+    
+    // Output ONLY clean JSON - no other console logs
+    process.stdout.write(JSON.stringify(result, null, 0));
   }
 })();

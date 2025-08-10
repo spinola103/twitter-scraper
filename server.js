@@ -1,9 +1,7 @@
 const express = require('express');
 const cors = require('cors');
-const { exec } = require('child_process');
-const { promisify } = require('util');
+const { spawn } = require('child_process');
 
-const execAsync = promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -20,65 +18,121 @@ app.get('/', (req, res) => {
   });
 });
 
-// Unified scraping function
+// Unified scraping function using spawn for better control
 async function scrapeTwitterProfile(url, res) {
   if (res.headersSent) {
     return;
   }
   
-  try {
-    const command = `node scrape_account.js "${url}"`;
-    const timeout = 120000; // 2 minutes
+  return new Promise((resolve) => {
+    let jsonOutput = '';
+    let hasResponded = false;
     
-    const { stdout, stderr } = await execAsync(command, { 
-      timeout,
+    const child = spawn('node', ['scrape_account.js', url], {
       cwd: __dirname,
-      maxBuffer: 1024 * 1024 * 20, // 20MB buffer
-      encoding: 'utf8'
+      stdio: ['pipe', 'pipe', 'pipe']
     });
-
-    // Parse the JSON output directly
-    const result = JSON.parse(stdout.trim());
     
-    if (result.success) {
-      res.json(result);
-    } else {
+    // Set timeout
+    const timeout = setTimeout(() => {
+      if (!hasResponded) {
+        hasResponded = true;
+        child.kill();
+        res.status(408).json({
+          error: 'Request timeout',
+          message: 'Scraping took too long',
+          url: url
+        });
+        resolve();
+      }
+    }, 120000); // 2 minutes
+    
+    // Collect stdout data
+    child.stdout.on('data', (data) => {
+      jsonOutput += data.toString();
+    });
+    
+    // Handle process completion
+    child.on('close', (code) => {
+      if (hasResponded) return;
+      
+      clearTimeout(timeout);
+      hasResponded = true;
+      
+      try {
+        // Clean the output - remove any extra whitespace or newlines
+        const cleanOutput = jsonOutput.trim();
+        
+        if (!cleanOutput) {
+          return res.status(500).json({
+            error: 'No output received',
+            message: 'The scraper produced no output',
+            url: url
+          });
+        }
+        
+        // Parse JSON
+        const result = JSON.parse(cleanOutput);
+        
+        if (result.success) {
+          res.json(result);
+        } else {
+          res.status(500).json({
+            error: 'Scraping failed',
+            message: result.error || 'Unknown error occurred',
+            url: url
+          });
+        }
+        
+      } catch (parseError) {
+        res.status(500).json({
+          error: 'Failed to parse response',
+          message: 'Invalid JSON output from scraper',
+          url: url,
+          rawOutput: jsonOutput.substring(0, 500) // First 500 chars for debugging
+        });
+      }
+      
+      resolve();
+    });
+    
+    // Handle errors
+    child.on('error', (error) => {
+      if (hasResponded) return;
+      
+      clearTimeout(timeout);
+      hasResponded = true;
+      
       res.status(500).json({
-        error: 'Scraping failed',
-        message: result.error,
+        error: 'Process error',
+        message: error.message,
         url: url
       });
-    }
-
-  } catch (error) {
-    if (res.headersSent) {
-      return;
-    }
-    
-    let errorMessage = error.message;
-    
-    if (error.code === 'ETIMEDOUT') {
-      errorMessage = 'Request timeout - the scraping took too long';
-    } else if (error.stdout) {
-      // Try to parse partial JSON output
-      try {
-        const result = JSON.parse(error.stdout.trim());
-        return res.status(500).json(result);
-      } catch (parseError) {
-        errorMessage = `Execution failed: ${errorMessage}`;
-      }
-    }
-    
-    res.status(500).json({
-      error: 'Scraping failed',
-      message: errorMessage,
-      url: url
+      
+      resolve();
     });
-  }
+    
+    // Handle stderr
+    child.stderr.on('data', (data) => {
+      const errorMessage = data.toString();
+      if (errorMessage.includes('Error') && !hasResponded) {
+        clearTimeout(timeout);
+        hasResponded = true;
+        
+        res.status(500).json({
+          error: 'Scraper error',
+          message: errorMessage.trim(),
+          url: url
+        });
+        
+        resolve();
+      }
+    });
+  });
 }
 
 // Main scraping endpoint
-app.post('/scrape', (req, res) => {
+app.post('/scrape', async (req, res) => {
   const { url } = req.body;
   
   if (!url) {
@@ -95,13 +149,13 @@ app.post('/scrape', (req, res) => {
     });
   }
 
-  scrapeTwitterProfile(url, res);
+  await scrapeTwitterProfile(url, res);
 });
 
 // GET endpoint for usernames
-app.get('/scrape/:username', (req, res) => {
+app.get('/scrape/:username', async (req, res) => {
   const url = `https://twitter.com/${req.params.username}`;
-  scrapeTwitterProfile(url, res);
+  await scrapeTwitterProfile(url, res);
 });
 
 // Error handling middleware
@@ -126,7 +180,6 @@ process.on('unhandledRejection', (reason, promise) => {
 // Handle uncaught exceptions
 process.on('uncaughtException', (err) => {
   console.error('Uncaught Exception:', err);
-  process.exit(1);
 });
 
 // Start server
