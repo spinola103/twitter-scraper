@@ -1,41 +1,10 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const fs = require('fs');
-const path = require('path');
 
 puppeteer.use(StealthPlugin());
 
 const profileURL = process.argv[2] || "https://twitter.com/phantom";
-const MAX_TWEETS = 5;
-const SCROLL_DELAY = 2000;
-
-async function autoScroll(page, maxScrolls = 10) {
-  console.log('🌀 Starting autoScroll...');
-  
-  let scrollCount = 0;
-  let previousHeight = 0;
-  
-  while (scrollCount < maxScrolls) {
-    await page.evaluate(() => {
-      window.scrollBy(0, window.innerHeight);
-    });
-    
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    const currentHeight = await page.evaluate(() => document.body.scrollHeight);
-    
-    if (currentHeight === previousHeight) {
-      console.log('🔄 No new content loaded, stopping scroll');
-      break;
-    }
-    
-    previousHeight = currentHeight;
-    scrollCount++;
-    console.log(`📜 Scroll ${scrollCount}/${maxScrolls}`);
-  }
-  
-  console.log('🌀 autoScroll finished.');
-}
+const MAX_TWEETS = 10;
 
 async function extractTweets(page, maxTweets) {
   console.log('🔍 Extracting tweets...');
@@ -56,42 +25,30 @@ async function extractTweets(page, maxTweets) {
         const linkElement = article.querySelector('a[href*="/status/"]');
         const link = linkElement ? 'https://twitter.com' + linkElement.getAttribute('href') : '';
         
-        // Get like count
+        // Get engagement metrics
         const likeElement = article.querySelector('[data-testid="like"]');
-        const likesText = likeElement ? likeElement.getAttribute('aria-label').match(/\d+/g) : null;
-        const likes = likesText ? parseInt(likesText[0], 10) : 0;
-        
-        // Get retweet count
         const retweetElement = article.querySelector('[data-testid="retweet"]');
-        const retweetsText = retweetElement ? retweetElement.getAttribute('aria-label').match(/\d+/g) : null;
-        const retweets = retweetsText ? parseInt(retweetsText[0], 10) : 0;
-        
-        // Get reply count
         const replyElement = article.querySelector('[data-testid="reply"]');
-        const repliesText = replyElement ? replyElement.getAttribute('aria-label').match(/\d+/g) : null;
-        const replies = repliesText ? parseInt(repliesText[0], 10) : 0;
         
-        // Check for verified badge
-        const verified = !!article.querySelector('[data-testid="icon-verified"]');
+        const likes = likeElement ? extractNumber(likeElement.getAttribute('aria-label')) : 0;
+        const retweets = retweetElement ? extractNumber(retweetElement.getAttribute('aria-label')) : 0;
+        const replies = replyElement ? extractNumber(replyElement.getAttribute('aria-label')) : 0;
         
-        // Get username
+        // Get user info
         const userElement = article.querySelector('[data-testid="User-Name"]');
         const username = userElement ? userElement.innerText.split('\n')[0] : '';
         
-        // Extract timestamp
+        // Get timestamp
         const timeElement = article.querySelector('time');
         const timestamp = timeElement ? timeElement.getAttribute('datetime') : '';
         
-        // Extract media info if present
+        // Check for media
         const mediaElements = article.querySelectorAll('[data-testid="tweetPhoto"], [data-testid="videoPlayer"]');
         const hasMedia = mediaElements.length > 0;
-        const mediaCount = mediaElements.length;
         
-        console.log(`Processing article ${i + 1}: text="${text.substring(0, 50)}..." link="${link}"`);
-        
-        if (text || link) {
+        // Only include tweets with text or media
+        if (text || hasMedia || link) {
           tweetData.push({
-            index: i + 1,
             username: username,
             text: text,
             link: link,
@@ -99,16 +56,21 @@ async function extractTweets(page, maxTweets) {
             replies: replies,
             retweets: retweets,
             likes: likes,
-            verified: verified,
             hasMedia: hasMedia,
-            mediaCount: mediaCount,
             extractedAt: new Date().toISOString()
           });
         }
       } catch (error) {
-        console.log('Error extracting tweet:', error);
+        console.log(`Error processing tweet ${i}:`, error.message);
         continue;
       }
+    }
+    
+    // Helper function to extract numbers from aria-labels
+    function extractNumber(ariaLabel) {
+      if (!ariaLabel) return 0;
+      const match = ariaLabel.match(/\d+/);
+      return match ? parseInt(match[0], 10) : 0;
     }
     
     return tweetData;
@@ -117,156 +79,90 @@ async function extractTweets(page, maxTweets) {
   return tweets;
 }
 
-async function saveTweets(tweets, filename = 'tweets.json') {
-  try {
-    const filePath = path.join(__dirname, filename);
-    fs.writeFileSync(filePath, JSON.stringify(tweets, null, 2));
-    console.log(`💾 Saved ${tweets.length} tweets to ${filename}`);
-  } catch (error) {
-    console.error('❌ Error saving tweets:', error.message);
-  }
-}
-
 (async () => {
-  console.log('🚀 Launching browser...');
+  let browser;
   
-  // Railway-optimized browser config
-  const browser = await puppeteer.launch({
-    headless: 'new', // Use new headless mode for Railway
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--disable-gpu',
-      '--disable-web-security',
-      '--disable-features=VizDisplayCompositor',
-      '--window-size=1200,800',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process', // Important for Railway
-      '--disable-background-networking',
-      '--disable-background-timer-throttling',
-      '--disable-renderer-backgrounding',
-      '--disable-backgrounding-occluded-windows'
-    ],
-    defaultViewport: {
-      width: 1200,
-      height: 800
-    }
-  });
-
-  const page = await browser.newPage();
-  
-  // Set additional headers
-  await page.setExtraHTTPHeaders({
-    'Accept-Language': 'en-US,en;q=0.9',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-  });
-
-  // Load cookies if available (but don't fail if not found)
-  const cookiePath = path.join(__dirname, 'cookie.json');
   try {
-    if (fs.existsSync(cookiePath)) {
-      const cookies = JSON.parse(fs.readFileSync(cookiePath, 'utf-8'));
-      await page.setCookie(...cookies);
-      console.log('✅ Loaded cookies');
-    } else {
-      console.log('ℹ️ No cookies found - proceeding without authentication');
-    }
-  } catch (err) {
-    console.error('❌ Cookie load error:', err.message);
-  }
+    console.log('🚀 Launching browser...');
+    
+    // Railway-optimized configuration
+    browser = await puppeteer.launch({
+      headless: 'new',
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-web-security',
+        '--window-size=1200,800',
+        '--single-process',
+        '--no-zygote'
+      ],
+      defaultViewport: { width: 1200, height: 800 }
+    });
 
-  try {
+    const page = await browser.newPage();
+    
+    // Set realistic headers
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+    
     console.log('🌐 Navigating to:', profileURL);
     await page.goto(profileURL, { 
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
     
-    console.log('⏳ Waiting for page to fully render...');
+    // Wait for initial content
     await new Promise(resolve => setTimeout(resolve, 3000));
 
     console.log('⏳ Waiting for tweets to load...');
     
+    // Try multiple selectors to find tweets
+    const selectors = ['article', '[data-testid="tweet"]', '[role="article"]'];
     let tweetsFound = false;
-    const selectors = [
-      'article', 
-      '[data-testid="tweet"]',
-      '[role="article"]',
-      'div[data-testid="primaryColumn"] div',
-      'main div'
-    ];
     
     for (const selector of selectors) {
       try {
-        await page.waitForSelector(selector, { timeout: 5000 });
+        await page.waitForSelector(selector, { timeout: 10000 });
         console.log(`✅ Found tweets using selector: ${selector}`);
         tweetsFound = true;
         break;
       } catch (e) {
-        console.log(`⚠️ Selector ${selector} failed, trying next...`);
+        console.log(`⚠️ Selector ${selector} not found, trying next...`);
       }
     }
     
     if (!tweetsFound) {
-      console.log('❌ No tweet selectors worked.');
-      throw new Error('Could not find tweets with any selector');
+      throw new Error('Could not find any tweets on the page');
     }
 
     // Scroll to load more tweets
-    let scrollAttempts = 0;
-    let tweetCount = 0;
-    
-    while (scrollAttempts < 5) {
-      let currentCount = 0;
-      try {
-        currentCount = await page.evaluate(() => document.querySelectorAll('article').length);
-      } catch (e) {
-        console.log('⚠️ Could not count tweets, continuing...');
-        currentCount = 0;
-      }
+    console.log('📜 Scrolling to load more tweets...');
+    for (let i = 0; i < 3; i++) {
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
+      await new Promise(resolve => setTimeout(resolve, 2000));
       
-      console.log(`🔍 Found ${currentCount} articles on page`);
-      
-      if (currentCount === tweetCount && tweetCount > 0) {
-        console.log('🔄 No new tweets loaded, stopping scroll');
-        break;
-      }
-      
-      tweetCount = currentCount;
-      console.log(`📜 Loaded ${currentCount} tweets (scroll ${scrollAttempts + 1}/5)`);
-      
-      await page.evaluate(() => {
-        window.scrollBy(0, window.innerHeight);
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, SCROLL_DELAY));
-      scrollAttempts++;
+      const tweetCount = await page.evaluate(() => document.querySelectorAll('article').length);
+      console.log(`Scroll ${i + 1}: Found ${tweetCount} tweets`);
     }
 
-    console.log(`✅ Final count: ${tweetCount} tweets loaded`);
-
+    // Extract tweets
     const tweets = await extractTweets(page, MAX_TWEETS);
     
     if (tweets.length === 0) {
-      console.log('⚠️ No tweets found. The page structure might have changed.');
+      console.log('⚠️ No tweets extracted. Page structure may have changed.');
+      console.log('📄 JSON Output:');
+      console.log('[]');
     } else {
       console.log(`🎉 Successfully extracted ${tweets.length} tweets`);
       
+      // Log summary
       tweets.forEach((tweet, index) => {
         console.log(`\n📝 Tweet ${index + 1}:`);
         console.log(`👤 @${tweet.username}`);
-        console.log(`🔗 ${tweet.link}`);
-        if (tweet.timestamp) console.log(`📅 ${new Date(tweet.timestamp).toLocaleDateString()}`);
-        console.log(`💬 ${tweet.text.substring(0, 150)}${tweet.text.length > 150 ? '...' : ''}`);
+        console.log(`💬 ${tweet.text.substring(0, 100)}${tweet.text.length > 100 ? '...' : ''}`);
         console.log(`📊 ${tweet.likes} likes, ${tweet.retweets} retweets, ${tweet.replies} replies`);
-        if (tweet.verified) console.log(`✅ Verified account`);
-        if (tweet.hasMedia) console.log(`📸 ${tweet.mediaCount} media items`);
       });
-      
-      await saveTweets(tweets);
       
       console.log('\n📄 JSON Output:');
       console.log(JSON.stringify(tweets, null, 2));
@@ -274,8 +170,12 @@ async function saveTweets(tweets, filename = 'tweets.json') {
 
   } catch (error) {
     console.error('❌ Scraping failed:', error.message);
+    console.log('📄 JSON Output:');
+    console.log('[]');
   } finally {
-    await browser.close();
-    console.log('🛑 Browser closed, script ended.');
+    if (browser) {
+      await browser.close();
+      console.log('🛑 Browser closed');
+    }
   }
 })();

@@ -1,7 +1,6 @@
 const express = require('express');
 const cors = require('cors');
 const { exec } = require('child_process');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -14,35 +13,17 @@ app.use(express.urlencoded({ extended: true }));
 // Health check endpoint
 app.get('/', (req, res) => {
   res.json({ 
-    status: 'Twitter Scraper API is running on Railway', 
-    timestamp: new Date().toISOString(),
-    version: '1.0.0'
+    status: 'Twitter Scraper API is running', 
+    timestamp: new Date().toISOString()
   });
 });
 
-// Main scraping endpoint
-app.post('/scrape', async (req, res) => {
-  const { url } = req.body;
-  
-  if (!url) {
-    return res.status(400).json({ 
-      error: 'URL is required',
-      example: { url: 'https://twitter.com/phantom' }
-    });
-  }
-
-  // Validate Twitter URL
-  if (!url.includes('twitter.com') && !url.includes('x.com')) {
-    return res.status(400).json({
-      error: 'Invalid URL. Must be a Twitter/X profile URL',
-      example: { url: 'https://twitter.com/phantom' }
-    });
-  }
-
+// Unified scraping function
+async function scrapeTwitterProfile(url, res) {
   console.log(`🚀 Starting scrape for: ${url}`);
   
   const command = `node scrape_account.js "${url}"`;
-  const timeout = 180000; // 3 minutes timeout for Railway
+  const timeout = 180000; // 3 minutes for Railway
   
   exec(command, { 
     timeout, 
@@ -53,37 +34,24 @@ app.post('/scrape', async (req, res) => {
       console.error('❌ Scraping failed:', error.message);
       return res.status(500).json({
         error: 'Scraping failed',
-        message: error.message,
-        stderr: stderr
+        message: error.message
       });
     }
 
     try {
-      // Extract JSON from stdout
+      // Find JSON output in stdout
       const lines = stdout.split('\n');
-      let jsonStartIndex = -1;
+      let jsonStartIndex = lines.findIndex(line => line.includes('📄 JSON Output:'));
       
-      // Find the line that starts the JSON output
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i].includes('📄 JSON Output:')) {
-          jsonStartIndex = i + 1;
-          break;
-        }
-      }
-      
-      if (jsonStartIndex === -1) {
+      if (jsonStartIndex !== -1) {
+        jsonStartIndex += 1; // Skip the marker line
+      } else {
         // Fallback: look for array start
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].trim().startsWith('[')) {
-            jsonStartIndex = i;
-            break;
-          }
-        }
+        jsonStartIndex = lines.findIndex(line => line.trim().startsWith('['));
       }
       
       if (jsonStartIndex !== -1) {
-        const jsonLines = lines.slice(jsonStartIndex);
-        const jsonString = jsonLines.join('\n').trim();
+        const jsonString = lines.slice(jsonStartIndex).join('\n').trim();
         const tweets = JSON.parse(jsonString);
         
         console.log(`✅ Successfully scraped ${tweets.length} tweets`);
@@ -96,39 +64,51 @@ app.post('/scrape', async (req, res) => {
           scrapedAt: new Date().toISOString()
         });
       } else {
-        throw new Error('Could not find JSON output in response');
+        throw new Error('Could not find JSON output');
       }
       
     } catch (parseError) {
       console.error('❌ JSON parsing failed:', parseError.message);
-      console.log('Raw stdout:', stdout);
-      
       res.status(500).json({
         error: 'Failed to parse scraping results',
-        message: parseError.message,
-        rawOutput: stdout.substring(0, 1000) // Limit output size
+        message: parseError.message
       });
     }
   });
-});
+}
 
-// GET endpoint for simple URL-based scraping
-app.get('/scrape/:username', (req, res) => {
-  const { username } = req.params;
-  const url = `https://twitter.com/${username}`;
+// Main scraping endpoint
+app.post('/scrape', (req, res) => {
+  const { url } = req.body;
   
-  // Forward to POST endpoint
-  req.body = { url };
-  const mockReq = { body: { url }, method: 'POST' };
-  return app.handle(mockReq, res);
+  if (!url) {
+    return res.status(400).json({ 
+      error: 'URL is required',
+      example: { url: 'https://twitter.com/username' }
+    });
+  }
+
+  // Validate Twitter URL
+  if (!url.includes('twitter.com') && !url.includes('x.com')) {
+    return res.status(400).json({
+      error: 'Invalid URL. Must be a Twitter/X profile URL'
+    });
+  }
+
+  scrapeTwitterProfile(url, res);
 });
 
-// Error handling middleware
+// GET endpoint for usernames
+app.get('/scrape/:username', (req, res) => {
+  const url = `https://twitter.com/${req.params.username}`;
+  scrapeTwitterProfile(url, res);
+});
+
+// Error handling
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
+  console.error('Server error:', err);
   res.status(500).json({
-    error: 'Internal server error',
-    message: err.message
+    error: 'Internal server error'
   });
 });
 
@@ -138,6 +118,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`📝 Endpoints:`);
   console.log(`   GET  /                     - Health check`);
   console.log(`   POST /scrape               - Scrape with JSON body`);
-  console.log(`   GET  /scrape/:username     - Scrape Twitter username`);
-  console.log(`🚀 Ready for Railway deployment!`);
+  console.log(`   GET  /scrape/:username     - Scrape by username`);
 });
