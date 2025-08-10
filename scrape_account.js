@@ -4,14 +4,20 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 const profileURL = process.argv[2] || "https://twitter.com/phantom";
-const MAX_TWEETS = 10;
+const MAX_TWEETS = 6;
 
 async function extractTweets(page, maxTweets) {
-  console.log('🔍 Extracting tweets...');
-  
   const tweets = await page.evaluate((maxTweets) => {
     const tweetData = [];
     const articles = document.querySelectorAll('article');
+    
+    // Helper function to extract numbers from aria-labels
+    function extractNumber(ariaLabel) {
+      if (!ariaLabel) return 0;
+      const match = ariaLabel.match(/[\d,]+/);
+      if (!match) return 0;
+      return parseInt(match[0].replace(/,/g, ''), 10) || 0;
+    }
     
     for (let i = 0; i < Math.min(articles.length, maxTweets); i++) {
       const article = articles[i];
@@ -19,7 +25,7 @@ async function extractTweets(page, maxTweets) {
       try {
         // Get tweet text
         const textElement = article.querySelector('[data-testid="tweetText"]');
-        const text = textElement ? textElement.innerText : '';
+        const text = textElement ? textElement.innerText.trim() : '';
         
         // Get tweet link
         const linkElement = article.querySelector('a[href*="/status/"]');
@@ -36,7 +42,7 @@ async function extractTweets(page, maxTweets) {
         
         // Get user info
         const userElement = article.querySelector('[data-testid="User-Name"]');
-        const username = userElement ? userElement.innerText.split('\n')[0] : '';
+        const username = userElement ? userElement.innerText.split('\n')[0].trim() : '';
         
         // Get timestamp
         const timeElement = article.querySelector('time');
@@ -46,7 +52,7 @@ async function extractTweets(page, maxTweets) {
         const mediaElements = article.querySelectorAll('[data-testid="tweetPhoto"], [data-testid="videoPlayer"]');
         const hasMedia = mediaElements.length > 0;
         
-        // Only include tweets with text or media
+        // Only include tweets with content
         if (text || hasMedia || link) {
           tweetData.push({
             username: username,
@@ -61,16 +67,9 @@ async function extractTweets(page, maxTweets) {
           });
         }
       } catch (error) {
-        console.log(`Error processing tweet ${i}:`, error.message);
+        // Skip failed tweets silently
         continue;
       }
-    }
-    
-    // Helper function to extract numbers from aria-labels
-    function extractNumber(ariaLabel) {
-      if (!ariaLabel) return 0;
-      const match = ariaLabel.match(/\d+/);
-      return match ? parseInt(match[0], 10) : 0;
     }
     
     return tweetData;
@@ -83,8 +82,6 @@ async function extractTweets(page, maxTweets) {
   let browser;
   
   try {
-    console.log('🚀 Launching browser...');
-    
     // Railway-optimized configuration
     browser = await puppeteer.launch({
       headless: 'new',
@@ -96,7 +93,10 @@ async function extractTweets(page, maxTweets) {
         '--disable-web-security',
         '--window-size=1200,800',
         '--single-process',
-        '--no-zygote'
+        '--no-zygote',
+        '--disable-extensions',
+        '--disable-plugins',
+        '--disable-images'
       ],
       defaultViewport: { width: 1200, height: 800 }
     });
@@ -106,7 +106,7 @@ async function extractTweets(page, maxTweets) {
     // Set realistic headers
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
-    console.log('🌐 Navigating to:', profileURL);
+    // Navigate to profile
     await page.goto(profileURL, { 
       waitUntil: 'domcontentloaded',
       timeout: 60000
@@ -115,20 +115,17 @@ async function extractTweets(page, maxTweets) {
     // Wait for initial content
     await new Promise(resolve => setTimeout(resolve, 3000));
 
-    console.log('⏳ Waiting for tweets to load...');
-    
-    // Try multiple selectors to find tweets
+    // Try to find tweets
     const selectors = ['article', '[data-testid="tweet"]', '[role="article"]'];
     let tweetsFound = false;
     
     for (const selector of selectors) {
       try {
         await page.waitForSelector(selector, { timeout: 10000 });
-        console.log(`✅ Found tweets using selector: ${selector}`);
         tweetsFound = true;
         break;
       } catch (e) {
-        console.log(`⚠️ Selector ${selector} not found, trying next...`);
+        continue;
       }
     }
     
@@ -137,45 +134,36 @@ async function extractTweets(page, maxTweets) {
     }
 
     // Scroll to load more tweets
-    console.log('📜 Scrolling to load more tweets...');
     for (let i = 0; i < 3; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
       await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      const tweetCount = await page.evaluate(() => document.querySelectorAll('article').length);
-      console.log(`Scroll ${i + 1}: Found ${tweetCount} tweets`);
     }
 
     // Extract tweets
     const tweets = await extractTweets(page, MAX_TWEETS);
     
-    if (tweets.length === 0) {
-      console.log('⚠️ No tweets extracted. Page structure may have changed.');
-      console.log('📄 JSON Output:');
-      console.log('[]');
-    } else {
-      console.log(`🎉 Successfully extracted ${tweets.length} tweets`);
-      
-      // Log summary
-      tweets.forEach((tweet, index) => {
-        console.log(`\n📝 Tweet ${index + 1}:`);
-        console.log(`👤 @${tweet.username}`);
-        console.log(`💬 ${tweet.text.substring(0, 100)}${tweet.text.length > 100 ? '...' : ''}`);
-        console.log(`📊 ${tweet.likes} likes, ${tweet.retweets} retweets, ${tweet.replies} replies`);
-      });
-      
-      console.log('\n📄 JSON Output:');
-      console.log(JSON.stringify(tweets, null, 2));
-    }
+    // Output only clean JSON
+    console.log(JSON.stringify({
+      success: true,
+      url: profileURL,
+      tweetsCount: tweets.length,
+      tweets: tweets,
+      scrapedAt: new Date().toISOString()
+    }));
 
   } catch (error) {
-    console.error('❌ Scraping failed:', error.message);
-    console.log('📄 JSON Output:');
-    console.log('[]');
+    // Output error as JSON
+    console.log(JSON.stringify({
+      success: false,
+      error: error.message,
+      url: profileURL,
+      tweetsCount: 0,
+      tweets: [],
+      scrapedAt: new Date().toISOString()
+    }));
   } finally {
     if (browser) {
       await browser.close();
-      console.log('🛑 Browser closed');
     }
   }
 })();
