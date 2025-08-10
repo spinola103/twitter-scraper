@@ -171,7 +171,10 @@ async function extractTweets(page, maxTweets) {
       timeout: 60000
     });
     
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Wait longer for initial load and scroll to very top to ensure latest tweets load
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     const selectors = ['article', '[data-testid="tweet"]', '[role="article"]'];
     let tweetsFound = false;
@@ -190,11 +193,18 @@ async function extractTweets(page, maxTweets) {
       throw new Error('Could not find any tweets on the page');
     }
 
-    // Scroll to load enough tweets for 5 recent ones
+    // Scroll to load enough tweets, but start from top to get latest ones
+    await page.evaluate(() => window.scrollTo(0, 0)); // Ensure we're at top
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
     for (let i = 0; i < 3; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight * 1.5));
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 2500)); // Increased wait time
     }
+    
+    // Scroll back to top to process from newest tweets
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     const tweets = await extractTweets(page, MAX_TWEETS);
     
