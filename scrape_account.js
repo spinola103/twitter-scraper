@@ -11,7 +11,6 @@ async function extractTweets(page, maxTweets) {
     const tweetData = [];
     const articles = document.querySelectorAll('article');
     
-    // Helper function to extract numbers from aria-labels
     function extractNumber(ariaLabel) {
       if (!ariaLabel) return 0;
       const match = ariaLabel.match(/[\d,]+/);
@@ -23,18 +22,14 @@ async function extractTweets(page, maxTweets) {
       const article = articles[i];
       
       try {
-        // Get tweet text
         const textElement = article.querySelector('[data-testid="tweetText"]');
         const text = textElement ? textElement.innerText.trim() : '';
         
-        // Get tweet link
         const linkElement = article.querySelector('a[href*="/status/"]');
         const link = linkElement ? 'https://twitter.com' + linkElement.getAttribute('href') : '';
         
-        // Skip if no link found (not a valid tweet)
         if (!link) continue;
         
-        // Get engagement metrics
         const likeElement = article.querySelector('[data-testid="like"]');
         const retweetElement = article.querySelector('[data-testid="retweet"]');
         const replyElement = article.querySelector('[data-testid="reply"]');
@@ -43,7 +38,6 @@ async function extractTweets(page, maxTweets) {
         const retweets = retweetElement ? extractNumber(retweetElement.getAttribute('aria-label')) : 0;
         const replies = replyElement ? extractNumber(replyElement.getAttribute('aria-label')) : 0;
         
-        // Get user info
         const userElement = article.querySelector('[data-testid="User-Name"]');
         let username = '';
         if (userElement) {
@@ -52,15 +46,12 @@ async function extractTweets(page, maxTweets) {
           username = lines[0] ? lines[0].trim() : '';
         }
         
-        // Get timestamp
         const timeElement = article.querySelector('time');
         const timestamp = timeElement ? timeElement.getAttribute('datetime') : '';
         
-        // Check for media
         const mediaElements = article.querySelectorAll('[data-testid="tweetPhoto"], [data-testid="videoPlayer"], img[alt*="Image"]');
         const hasMedia = mediaElements.length > 0;
         
-        // Check if verified
         const verifiedElement = article.querySelector('[data-testid="icon-verified"]') || 
                                article.querySelector('svg[aria-label*="Verified"]');
         const isVerified = !!verifiedElement;
@@ -81,7 +72,6 @@ async function extractTweets(page, maxTweets) {
         });
         
       } catch (error) {
-        // Skip failed tweets silently
         continue;
       }
     }
@@ -103,7 +93,6 @@ async function extractTweets(page, maxTweets) {
   };
   
   try {
-    // Launch browser with minimal logging
     browser = await puppeteer.launch({
       headless: 'new',
       args: [
@@ -126,7 +115,6 @@ async function extractTweets(page, maxTweets) {
 
     const page = await browser.newPage();
     
-    // Block unnecessary resources
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const resourceType = req.resourceType();
@@ -137,19 +125,15 @@ async function extractTweets(page, maxTweets) {
       }
     });
     
-    // Set realistic headers
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
-    // Navigate to profile
     await page.goto(profileURL, { 
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
     
-    // Wait for initial content
     await new Promise(resolve => setTimeout(resolve, 3000));
 
-    // Try to find tweets
     const selectors = ['article', '[data-testid="tweet"]', '[role="article"]'];
     let tweetsFound = false;
     
@@ -167,13 +151,11 @@ async function extractTweets(page, maxTweets) {
       throw new Error('Could not find any tweets on the page');
     }
 
-    // Scroll to load more tweets
     for (let i = 0; i < 3; i++) {
       await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
-    // Extract tweets
     const tweets = await extractTweets(page, MAX_TWEETS);
     
     result.success = true;
@@ -187,7 +169,6 @@ async function extractTweets(page, maxTweets) {
       await browser.close();
     }
     
-    // Output ONLY clean JSON - no other console logs
-    process.stdout.write(JSON.stringify(result, null, 0));
+    process.stdout.write(JSON.stringify(result));
   }
 })();
