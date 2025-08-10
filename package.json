@@ -5,20 +5,16 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js",
-    "scrape": "node scrape_account.js"
+    "dev": "node server.js"
   },
   "dependencies": {
-    "puppeteer": "^21.9.0",
+    "puppeteer": "^22.0.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
-    "express": "^4.18.2",
+    "express": "^4.19.2",
     "cors": "^2.8.5"
   },
   "engines": {
-    "node": ">=18.0.0"
-  },
-  "keywords": ["twitter", "scraper", "api", "railway"],
-  "author": "Spinola Theres N",
-  "license": "MIT"
+    "node": "20.x"
+  }
 }
