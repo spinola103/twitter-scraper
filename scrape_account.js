@@ -4,7 +4,7 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 puppeteer.use(StealthPlugin());
 
 const profileURL = process.argv[2] || "https://twitter.com/phantom";
-const MAX_TWEETS = 10;
+const MAX_TWEETS = 5; // Changed to 5 tweets
 
 async function extractTweets(page, maxTweets) {
   const tweets = await page.evaluate((maxTweets) => {
@@ -18,10 +18,47 @@ async function extractTweets(page, maxTweets) {
       return parseInt(match[0].replace(/,/g, ''), 10) || 0;
     }
     
-    for (let i = 0; i < Math.min(articles.length, maxTweets); i++) {
+    // Function to check if tweet is pinned
+    function isPinnedTweet(article) {
+      // Look for pinned tweet indicators
+      const pinnedIndicators = [
+        '[data-testid="socialContext"]', // Common pinned tweet indicator
+        '[aria-label*="Pinned"]',
+        '[aria-label*="pinned"]',
+        'svg[aria-label*="Pinned"]',
+        'svg[aria-label*="pinned"]'
+      ];
+      
+      for (const selector of pinnedIndicators) {
+        const element = article.querySelector(selector);
+        if (element) {
+          const text = element.textContent || element.getAttribute('aria-label') || '';
+          if (text.toLowerCase().includes('pinned')) {
+            return true;
+          }
+        }
+      }
+      
+      // Check for "Pinned Tweet" text in social context
+      const socialContext = article.querySelector('[data-testid="socialContext"]');
+      if (socialContext && socialContext.textContent.toLowerCase().includes('pinned')) {
+        return true;
+      }
+      
+      return false;
+    }
+    
+    let processedTweets = 0;
+    
+    for (let i = 0; i < articles.length && processedTweets < maxTweets; i++) {
       const article = articles[i];
       
       try {
+        // Skip pinned tweets
+        if (isPinnedTweet(article)) {
+          continue;
+        }
+        
         const textElement = article.querySelector('[data-testid="tweetText"]');
         const text = textElement ? textElement.innerText.trim() : '';
         
@@ -57,7 +94,7 @@ async function extractTweets(page, maxTweets) {
         const isVerified = !!verifiedElement;
         
         tweetData.push({
-          index: i + 1,
+          index: processedTweets + 1,
           username: username,
           text: text,
           link: link,
@@ -70,6 +107,8 @@ async function extractTweets(page, maxTweets) {
           mediaCount: mediaElements.length,
           extractedAt: new Date().toISOString()
         });
+        
+        processedTweets++;
         
       } catch (error) {
         continue;
@@ -151,8 +190,9 @@ async function extractTweets(page, maxTweets) {
       throw new Error('Could not find any tweets on the page');
     }
 
+    // Scroll to load enough tweets for 5 recent ones
     for (let i = 0; i < 3; i++) {
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 2));
+      await page.evaluate(() => window.scrollBy(0, window.innerHeight * 1.5));
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
 
